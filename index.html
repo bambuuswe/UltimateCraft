@@ -12,6 +12,7 @@ width:6px;height:6px;
 margin-left:-3px;margin-top:-3px;
 background:white;
 pointer-events:none;
+z-index:1000;
 }
 </style>
 </head>
@@ -38,57 +39,81 @@ let clock = new THREE.Clock();
 
 scene.background = new THREE.Color(0x87CEEB);
 
-let sun = new THREE.DirectionalLight(0xffffff,1);
-sun.position.set(100,200,100);
+// Starkare ljus
+let sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(50, 100, 50);
 scene.add(sun);
-scene.add(new THREE.AmbientLight(0x404040));
+scene.add(new THREE.AmbientLight(0x666666)); // Ljusare ambient
 
 /* ===========================
-   TEXTURE ATLAS
+   TEXTURE ATLAS - FIXAD FALLBACK
 =========================== */
 
 const TILE_SIZE = 16;
 const ATLAS_SIZE = 256;
 const TILE_UV = TILE_SIZE / ATLAS_SIZE;
 
-// Skapa en fallback-texture om atlas.png inte finns
+// Skapa en tydlig fallback-texture med färger
 let canvas = document.createElement('canvas');
 canvas.width = 256;
 canvas.height = 256;
 let ctx = canvas.getContext('2d');
-ctx.fillStyle = '#654321';
-ctx.fillRect(0,0,256,256);
-ctx.fillStyle = '#228B22';
-ctx.fillRect(16,0,16,16);
+
+// Fyll bakgrund med magenta (så vi ser om något är fel)
+ctx.fillStyle = '#FF00FF';
+ctx.fillRect(0, 0, 256, 256);
+
+// Tile 0,0: Gräs (grön topp, brun botten)
+ctx.fillStyle = '#228B22'; // Forest green
+ctx.fillRect(0, 0, 16, 16);
+ctx.fillStyle = '#8B4513'; // Saddle brown
+ctx.fillRect(0, 8, 16, 8);
+
+// Tile 1,0: Jord (brun)
 ctx.fillStyle = '#8B4513';
-ctx.fillRect(0,0,16,16);
+ctx.fillRect(16, 0, 16, 16);
+
+// Tile 2,0: Sten (grå)
+ctx.fillStyle = '#808080';
+ctx.fillRect(32, 0, 16, 16);
+
+// Lägg till lite "noise" för att det ska se bättre ut
+for(let i=0; i<1000; i++) {
+    ctx.fillStyle = Math.random() > 0.5 ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)';
+    ctx.fillRect(Math.random()*256, Math.random()*256, 2, 2);
+}
 
 let texture = new THREE.CanvasTexture(canvas);
 texture.magFilter = THREE.NearestFilter;
 texture.minFilter = THREE.NearestFilter;
+texture.colorSpace = THREE.SRGBColorSpace;
 
 // Försök ladda atlas.png om den finns
 new THREE.TextureLoader().load("atlas.png", 
     function(tex) {
         texture.image = tex.image;
         texture.needsUpdate = true;
+        console.log("Atlas loaded");
     },
     undefined,
     function(err) {
-        console.log("Använder fallback-texture");
+        console.log("Using fallback texture");
     }
 );
 
-let material = new THREE.MeshLambertMaterial({ map: texture });
+let material = new THREE.MeshLambertMaterial({ 
+    map: texture,
+    side: THREE.FrontSide
+});
 
 function getUV(tileX, tileY){
     let u = tileX * TILE_UV;
     let v = 1 - (tileY + 1) * TILE_UV;
     return [
-        u, v + TILE_UV,  // 0,0
-        u + TILE_UV, v + TILE_UV,  // 1,0
-        u + TILE_UV, v,  // 1,1
-        u, v   // 0,1
+        u, v + TILE_UV,  // 0,0 - bottom-left
+        u + TILE_UV, v + TILE_UV,  // 1,0 - bottom-right
+        u + TILE_UV, v,  // 1,1 - top-right
+        u, v   // 0,1 - top-left
     ];
 }
 
@@ -100,7 +125,7 @@ let velocity = new THREE.Vector3();
 let keys = {};
 let canJump = false;
 
-camera.position.set(0,40,0);
+camera.position.set(0, 35, 0); // Starta högre upp
 
 document.body.onclick = ()=> document.body.requestPointerLock();
 
@@ -163,8 +188,9 @@ Math.cos(worldZ*0.1)*3
 );
 
 for(let y=0;y<height;y++){
-if(y===height-1) this.set(x,y,z,1);
-else this.set(x,y,z,2);
+if(y===height-1) this.set(x,y,z,1); // Gräs
+else if(y > height-4) this.set(x,y,z,2); // Jord
+else this.set(x,y,z,3); // Sten
 }
 }
 }
@@ -183,12 +209,12 @@ let indices=[];
 let face=0;
 
 const faces=[
-{dir:[0,1,0],  corners:[[0,1,0],[1,1,0],[1,1,1],[0,1,1]], uvOrder:[0,1,2,3]},
-{dir:[0,-1,0], corners:[[0,0,1],[1,0,1],[1,0,0],[0,0,0]], uvOrder:[0,1,2,3]},
-{dir:[1,0,0],  corners:[[1,0,1],[1,1,1],[1,1,0],[1,0,0]], uvOrder:[0,1,2,3]},
-{dir:[-1,0,0], corners:[[0,0,0],[0,1,0],[0,1,1],[0,0,1]], uvOrder:[0,1,2,3]},
-{dir:[0,0,1],  corners:[[0,0,1],[0,1,1],[1,1,1],[1,0,1]], uvOrder:[0,1,2,3]},
-{dir:[0,0,-1], corners:[[1,0,0],[1,1,0],[0,1,0],[0,0,0]], uvOrder:[0,1,2,3]},
+{dir:[0,1,0],  corners:[[0,1,0],[1,1,0],[1,1,1],[0,1,1]]}, // top
+{dir:[0,-1,0], corners:[[0,0,1],[1,0,1],[1,0,0],[0,0,0]]}, // bottom
+{dir:[1,0,0],  corners:[[1,0,1],[1,1,1],[1,1,0],[1,0,0]]}, // right
+{dir:[-1,0,0], corners:[[0,0,0],[0,1,0],[0,1,1],[0,0,1]]}, // left
+{dir:[0,0,1],  corners:[[0,0,1],[0,1,1],[1,1,1],[1,0,1]]}, // front
+{dir:[0,0,-1], corners:[[1,0,0],[1,1,0],[0,1,0],[0,0,0]]}, // back
 ];
 
 for(let x=0;x<CHUNK_SIZE;x++){
@@ -210,23 +236,32 @@ let wx=this.cx*CHUNK_SIZE+x;
 let wz=this.cz*CHUNK_SIZE+z;
 
 for(let c of f.corners){
-positions.push(wx+c[0],y+c[1],wz+c[2]);
+positions.push(wx+c[0], y+c[1], wz+c[2]);
 }
 
-let tileX = block===1 ? 0 : 1;
-let tileY = 0;
+// Välj tile baserat på blocktyp och sida
+let tileX, tileY = 0;
+if(block === 1) { // Gräs
+    if(f.dir[1] === 1) tileX = 0; // Toppen är grön
+    else if(f.dir[1] === -1) tileX = 1; // Botten är jord
+    else tileX = 1; // Sidor är jord
+} else if(block === 2) {
+    tileX = 1; // Jord
+} else {
+    tileX = 2; // Sten
+}
 
-let uv=getUV(tileX,tileY);
+let uv=getUV(tileX, tileY);
 
-// Korrekt UV-mappning för varje hörn
+// Korrekt UV-mappning
 uvs.push(uv[0], uv[1]);  // hörn 0
 uvs.push(uv[2], uv[3]);  // hörn 1
 uvs.push(uv[4], uv[5]);  // hörn 2
 uvs.push(uv[6], uv[7]);  // hörn 3
 
 indices.push(
-face*4+0,face*4+1,face*4+2,
-face*4+0,face*4+2,face*4+3
+face*4+0, face*4+1, face*4+2,
+face*4+0, face*4+2, face*4+3
 );
 
 face++;
@@ -238,14 +273,14 @@ face++;
 if(positions.length === 0) return;
 
 let geo=new THREE.BufferGeometry();
-geo.setAttribute("position",
-new THREE.Float32BufferAttribute(positions,3));
-geo.setAttribute("uv",
-new THREE.Float32BufferAttribute(uvs,2));
+geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
 geo.setIndex(indices);
 geo.computeVertexNormals();
 
-this.mesh=new THREE.Mesh(geo,material);
+this.mesh=new THREE.Mesh(geo, material);
+this.mesh.castShadow = true;
+this.mesh.receiveShadow = true;
 scene.add(this.mesh);
 }
 
@@ -260,23 +295,22 @@ function updateChunks(){
 let cx=Math.floor(camera.position.x/CHUNK_SIZE);
 let cz=Math.floor(camera.position.z/CHUNK_SIZE);
 
-for(let dx=-RENDER_DISTANCE;dx<=RENDER_DISTANCE;dx++){
-for(let dz=-RENDER_DISTANCE;dz<=RENDER_DISTANCE;dz++){
+for(let dx=-RENDER_DISTANCE; dx<=RENDER_DISTANCE; dx++){
+for(let dz=-RENDER_DISTANCE; dz<=RENDER_DISTANCE; dz++){
 
 let key=`${cx+dx},${cz+dz}`;
 
 if(!chunks.has(key)){
-chunks.set(key,new Chunk(cx+dx,cz+dz));
+chunks.set(key, new Chunk(cx+dx, cz+dz));
 }
 }
 }
 
 for(let key of chunks.keys()){
 let [x,z]=key.split(",").map(Number);
-if(Math.abs(x-cx)>RENDER_DISTANCE+1||
-Math.abs(z-cz)>RENDER_DISTANCE+1){
+if(Math.abs(x-cx)>RENDER_DISTANCE+1 || Math.abs(z-cz)>RENDER_DISTANCE+1){
 let chunk = chunks.get(key);
-if(chunk.mesh) scene.remove(chunk.mesh);
+if(chunk && chunk.mesh) scene.remove(chunk.mesh);
 chunks.delete(key);
 }
 }
@@ -287,34 +321,35 @@ chunks.delete(key);
 =========================== */
 
 function updatePlayer(delta){
+// Friktion
+velocity.x -= velocity.x * 10 * delta;
+velocity.z -= velocity.z * 10 * delta;
 
-velocity.x-=velocity.x*10*delta;
-velocity.z-=velocity.z*10*delta;
+// Rörelse
+let speed = 40;
+if(keys["KeyW"]) velocity.z -= speed * delta;
+if(keys["KeyS"]) velocity.z += speed * delta;
+if(keys["KeyA"]) velocity.x -= speed * delta;
+if(keys["KeyD"]) velocity.x += speed * delta;
 
-// Rörelse relativt kamerans riktning
-let speed = 30;
-if(keys["KeyW"]) velocity.z-=speed*delta;
-if(keys["KeyS"]) velocity.z+=speed*delta;
-if(keys["KeyA"]) velocity.x-=speed*delta;
-if(keys["KeyD"]) velocity.x+=speed*delta;
+camera.translateX(velocity.x * delta);
+camera.translateZ(velocity.z * delta);
 
-camera.translateX(velocity.x*delta);
-camera.translateZ(velocity.z*delta);
-
-// Enkel gravitation
-velocity.y-=40*delta;
-camera.position.y+=velocity.y*delta;
+// Gravitation
+velocity.y -= 50 * delta;
+camera.position.y += velocity.y * delta;
 
 // Markkollision (enkel)
-if(camera.position.y<12){
-velocity.y=0;
-camera.position.y=12;
-canJump=true;
+if(camera.position.y < 15){
+velocity.y = 0;
+camera.position.y = 15;
+canJump = true;
 }
 
-if(keys["Space"]&&canJump){
-velocity.y=15;
-canJump=false;
+// Hopp
+if(keys["Space"] && canJump){
+velocity.y = 20;
+canJump = false;
 }
 }
 
@@ -324,13 +359,20 @@ canJump=false;
 
 function animate(){
 requestAnimationFrame(animate);
-let delta=Math.min(clock.getDelta(), 0.1); // Cap delta för att undvika hopp
+let delta = Math.min(clock.getDelta(), 0.1);
 updatePlayer(delta);
 updateChunks();
-renderer.render(scene,camera);
+renderer.render(scene, camera);
 }
 
 animate();
+
+// Hantera fönsterstorlek
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
 </script>
 </body>
 </html>
