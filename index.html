@@ -14,11 +14,20 @@ background:white;
 pointer-events:none;
 z-index:1000;
 }
+#debug{
+position:fixed;
+top:10px;left:10px;
+color:white;
+font-family:monospace;
+background:rgba(0,0,0,0.5);
+padding:10px;
+}
 </style>
 </head>
 <body>
 
 <div id="crosshair"></div>
+<div id="debug">Laddar...</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js"></script>
 
@@ -36,84 +45,62 @@ renderer.setSize(window.innerWidth,window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
 let clock = new THREE.Clock();
+let debugDiv = document.getElementById('debug');
 
 scene.background = new THREE.Color(0x87CEEB);
 
-// Starkare ljus
-let sun = new THREE.DirectionalLight(0xffffff, 1.5);
+// Ljus
+let sun = new THREE.DirectionalLight(0xffffff, 1.0);
 sun.position.set(50, 100, 50);
 scene.add(sun);
-scene.add(new THREE.AmbientLight(0x666666)); // Ljusare ambient
+scene.add(new THREE.AmbientLight(0x888888));
 
 /* ===========================
-   TEXTURE ATLAS - FIXAD FALLBACK
+   TEXTURE - ENKEL FALLBACK
 =========================== */
 
 const TILE_SIZE = 16;
 const ATLAS_SIZE = 256;
 const TILE_UV = TILE_SIZE / ATLAS_SIZE;
 
-// Skapa en tydlig fallback-texture med färger
+// Skapa enkel canvas texture
 let canvas = document.createElement('canvas');
 canvas.width = 256;
 canvas.height = 256;
 let ctx = canvas.getContext('2d');
 
-// Fyll bakgrund med magenta (så vi ser om något är fel)
+// Rensa och fyll med färger
 ctx.fillStyle = '#FF00FF';
 ctx.fillRect(0, 0, 256, 256);
 
-// Tile 0,0: Gräs (grön topp, brun botten)
-ctx.fillStyle = '#228B22'; // Forest green
+// Gräs (0,0)
+ctx.fillStyle = '#00AA00';
 ctx.fillRect(0, 0, 16, 16);
-ctx.fillStyle = '#8B4513'; // Saddle brown
-ctx.fillRect(0, 8, 16, 8);
+ctx.fillStyle = '#8B4513';
+ctx.fillRect(0, 12, 16, 4);
 
-// Tile 1,0: Jord (brun)
+// Jord (1,0)
 ctx.fillStyle = '#8B4513';
 ctx.fillRect(16, 0, 16, 16);
 
-// Tile 2,0: Sten (grå)
-ctx.fillStyle = '#808080';
+// Sten (2,0)
+ctx.fillStyle = '#888888';
 ctx.fillRect(32, 0, 16, 16);
-
-// Lägg till lite "noise" för att det ska se bättre ut
-for(let i=0; i<1000; i++) {
-    ctx.fillStyle = Math.random() > 0.5 ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)';
-    ctx.fillRect(Math.random()*256, Math.random()*256, 2, 2);
-}
 
 let texture = new THREE.CanvasTexture(canvas);
 texture.magFilter = THREE.NearestFilter;
 texture.minFilter = THREE.NearestFilter;
-texture.colorSpace = THREE.SRGBColorSpace;
 
-// Försök ladda atlas.png om den finns
-new THREE.TextureLoader().load("atlas.png", 
-    function(tex) {
-        texture.image = tex.image;
-        texture.needsUpdate = true;
-        console.log("Atlas loaded");
-    },
-    undefined,
-    function(err) {
-        console.log("Using fallback texture");
-    }
-);
-
-let material = new THREE.MeshLambertMaterial({ 
-    map: texture,
-    side: THREE.FrontSide
-});
+let material = new THREE.MeshLambertMaterial({ map: texture });
 
 function getUV(tileX, tileY){
     let u = tileX * TILE_UV;
     let v = 1 - (tileY + 1) * TILE_UV;
     return [
-        u, v + TILE_UV,  // 0,0 - bottom-left
-        u + TILE_UV, v + TILE_UV,  // 1,0 - bottom-right
-        u + TILE_UV, v,  // 1,1 - top-right
-        u, v   // 0,1 - top-left
+        u, v + TILE_UV,
+        u + TILE_UV, v + TILE_UV,
+        u + TILE_UV, v,
+        u, v
     ];
 }
 
@@ -125,7 +112,9 @@ let velocity = new THREE.Vector3();
 let keys = {};
 let canJump = false;
 
-camera.position.set(0, 35, 0); // Starta högre upp
+// Starta högt upp och titta neråt
+camera.position.set(8, 50, 8);
+camera.lookAt(8, 0, 8);
 
 document.body.onclick = ()=> document.body.requestPointerLock();
 
@@ -141,233 +130,213 @@ document.addEventListener("keydown",e=>keys[e.code]=true);
 document.addEventListener("keyup",e=>keys[e.code]=false);
 
 /* ===========================
-   ENGINE CORE
+   CHUNK SYSTEM
 =========================== */
 
-const CHUNK_SIZE=16;
-const CHUNK_HEIGHT=32;
-const RENDER_DISTANCE=2;
+const CHUNK_SIZE = 16;
+const CHUNK_HEIGHT = 32;
 
-let chunks=new Map();
+class Chunk {
+    constructor(cx, cz) {
+        this.cx = cx;
+        this.cz = cz;
+        this.voxels = new Uint8Array(CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE);
+        this.mesh = null;
+        this.generate();
+        this.buildMesh();
+    }
 
-class Chunk{
+    index(x, y, z) {
+        return x + CHUNK_SIZE * (z + CHUNK_SIZE * y);
+    }
 
-constructor(cx,cz){
-this.cx=cx;
-this.cz=cz;
-this.voxels=new Uint8Array(CHUNK_SIZE*CHUNK_HEIGHT*CHUNK_SIZE);
-this.mesh=null;
-this.generate();
-this.buildMesh();
-}
+    get(x, y, z) {
+        if(x<0 || y<0 || z<0 || x>=CHUNK_SIZE || y>=CHUNK_HEIGHT || z>=CHUNK_SIZE)
+            return 0;
+        return this.voxels[this.index(x,y,z)];
+    }
 
-index(x,y,z){
-return x + CHUNK_SIZE*(z + CHUNK_SIZE*y);
-}
+    set(x, y, z, v) {
+        this.voxels[this.index(x,y,z)] = v;
+    }
 
-get(x,y,z){
-if(x<0||y<0||z<0||x>=CHUNK_SIZE||y>=CHUNK_HEIGHT||z>=CHUNK_SIZE)
-return 0;
-return this.voxels[this.index(x,y,z)];
-}
+    generate() {
+        for(let x=0; x<CHUNK_SIZE; x++) {
+            for(let z=0; z<CHUNK_SIZE; z++) {
+                let worldX = this.cx * CHUNK_SIZE + x;
+                let worldZ = this.cz * CHUNK_SIZE + z;
+                
+                // Enkel höjdgenerering
+                let height = Math.floor(8 + Math.sin(worldX*0.1)*3 + Math.cos(worldZ*0.1)*3);
+                
+                for(let y=0; y<height && y<CHUNK_HEIGHT; y++) {
+                    if(y === height-1) this.set(x,y,z,1); // Gräs
+                    else if(y > height-4) this.set(x,y,z,2); // Jord
+                    else this.set(x,y,z,3); // Sten
+                }
+            }
+        }
+    }
 
-set(x,y,z,v){
-this.voxels[this.index(x,y,z)]=v;
-}
+    buildMesh() {
+        if(this.mesh) {
+            scene.remove(this.mesh);
+            this.mesh.geometry.dispose();
+        }
 
-generate(){
-for(let x=0;x<CHUNK_SIZE;x++){
-for(let z=0;z<CHUNK_SIZE;z++){
+        let positions = [];
+        let uvs = [];
+        let indices = [];
+        let faceCount = 0;
 
-let worldX=this.cx*CHUNK_SIZE+x;
-let worldZ=this.cz*CHUNK_SIZE+z;
+        // 6 riktningar: +Y, -Y, +X, -X, +Z, -Z
+        const dirs = [
+            [0,1,0], [0,-1,0], [1,0,0], [-1,0,0], [0,0,1], [0,0,-1]
+        ];
+        
+        // Hörn för varje riktning (4 hörn per face)
+        const corners = [
+            [[0,1,0],[1,1,0],[1,1,1],[0,1,1]], // top
+            [[0,0,1],[1,0,1],[1,0,0],[0,0,0]], // bottom
+            [[1,0,1],[1,1,1],[1,1,0],[1,0,0]], // right
+            [[0,0,0],[0,1,0],[0,1,1],[0,0,1]], // left
+            [[0,0,1],[0,1,1],[1,1,1],[1,0,1]], // front
+            [[1,0,0],[1,1,0],[0,1,0],[0,0,0]]  // back
+        ];
 
-let height=Math.floor(
-8 + Math.sin(worldX*0.1)*3 +
-Math.cos(worldZ*0.1)*3
-);
+        for(let x=0; x<CHUNK_SIZE; x++) {
+            for(let y=0; y<CHUNK_HEIGHT; y++) {
+                for(let z=0; z<CHUNK_SIZE; z++) {
+                    let block = this.get(x,y,z);
+                    if(!block) continue;
 
-for(let y=0;y<height;y++){
-if(y===height-1) this.set(x,y,z,1); // Gräs
-else if(y > height-4) this.set(x,y,z,2); // Jord
-else this.set(x,y,z,3); // Sten
-}
-}
-}
-}
+                    for(let d=0; d<6; d++) {
+                        let dir = dirs[d];
+                        let nx = x + dir[0];
+                        let ny = y + dir[1];
+                        let nz = z + dir[2];
 
-buildMesh(){
+                        // Kolla om granne är tom
+                        if(this.get(nx, ny, nz)) continue;
 
-if(this.mesh) {
-    scene.remove(this.mesh);
-    this.mesh.geometry.dispose();
-}
+                        let wx = this.cx * CHUNK_SIZE + x;
+                        let wz = this.cz * CHUNK_SIZE + z;
 
-let positions=[];
-let uvs=[];
-let indices=[];
-let face=0;
+                        // Lägg till 4 hörn
+                        for(let c of corners[d]) {
+                            positions.push(wx + c[0], y + c[1], wz + c[2]);
+                        }
 
-const faces=[
-{dir:[0,1,0],  corners:[[0,1,0],[1,1,0],[1,1,1],[0,1,1]]}, // top
-{dir:[0,-1,0], corners:[[0,0,1],[1,0,1],[1,0,0],[0,0,0]]}, // bottom
-{dir:[1,0,0],  corners:[[1,0,1],[1,1,1],[1,1,0],[1,0,0]]}, // right
-{dir:[-1,0,0], corners:[[0,0,0],[0,1,0],[0,1,1],[0,0,1]]}, // left
-{dir:[0,0,1],  corners:[[0,0,1],[0,1,1],[1,1,1],[1,0,1]]}, // front
-{dir:[0,0,-1], corners:[[1,0,0],[1,1,0],[0,1,0],[0,0,0]]}, // back
-];
+                        // Välj texture
+                        let tileX = 1; // default jord
+                        if(block === 1) {
+                            tileX = (d === 0) ? 0 : 1; // Gräs på toppen, jord på sidor
+                        } else if(block === 3) {
+                            tileX = 2; // Sten
+                        }
 
-for(let x=0;x<CHUNK_SIZE;x++){
-for(let y=0;y<CHUNK_HEIGHT;y++){
-for(let z=0;z<CHUNK_SIZE;z++){
+                        let uv = getUV(tileX, 0);
+                        
+                        // 4 hörn, 2 UVs per hörn
+                        uvs.push(uv[0], uv[1]);
+                        uvs.push(uv[2], uv[3]);
+                        uvs.push(uv[4], uv[5]);
+                        uvs.push(uv[6], uv[7]);
 
-let block=this.get(x,y,z);
-if(!block) continue;
+                        // 2 trianglar = 6 indices
+                        let base = faceCount * 4;
+                        indices.push(base, base+1, base+2, base, base+2, base+3);
+                        
+                        faceCount++;
+                    }
+                }
+            }
+        }
 
-for(let f of faces){
+        if(positions.length === 0) {
+            console.log("Inga faces genererade för chunk", this.cx, this.cz);
+            return;
+        }
 
-let nx=x+f.dir[0];
-let ny=y+f.dir[1];
-let nz=z+f.dir[2];
+        console.log("Chunk", this.cx, this.cz, "faces:", faceCount, "verts:", positions.length/3);
 
-if(this.get(nx,ny,nz)) continue;
+        let geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        geo.setIndex(indices);
+        geo.computeVertexNormals();
 
-let wx=this.cx*CHUNK_SIZE+x;
-let wz=this.cz*CHUNK_SIZE+z;
-
-for(let c of f.corners){
-positions.push(wx+c[0], y+c[1], wz+c[2]);
-}
-
-// Välj tile baserat på blocktyp och sida
-let tileX, tileY = 0;
-if(block === 1) { // Gräs
-    if(f.dir[1] === 1) tileX = 0; // Toppen är grön
-    else if(f.dir[1] === -1) tileX = 1; // Botten är jord
-    else tileX = 1; // Sidor är jord
-} else if(block === 2) {
-    tileX = 1; // Jord
-} else {
-    tileX = 2; // Sten
-}
-
-let uv=getUV(tileX, tileY);
-
-// Korrekt UV-mappning
-uvs.push(uv[0], uv[1]);  // hörn 0
-uvs.push(uv[2], uv[3]);  // hörn 1
-uvs.push(uv[4], uv[5]);  // hörn 2
-uvs.push(uv[6], uv[7]);  // hörn 3
-
-indices.push(
-face*4+0, face*4+1, face*4+2,
-face*4+0, face*4+2, face*4+3
-);
-
-face++;
-}
-}
-}
-}
-
-if(positions.length === 0) return;
-
-let geo=new THREE.BufferGeometry();
-geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-geo.setIndex(indices);
-geo.computeVertexNormals();
-
-this.mesh=new THREE.Mesh(geo, material);
-this.mesh.castShadow = true;
-this.mesh.receiveShadow = true;
-scene.add(this.mesh);
-}
-
+        this.mesh = new THREE.Mesh(geo, material);
+        scene.add(this.mesh);
+    }
 }
 
 /* ===========================
-   CHUNK STREAMING
+   MAIN
 =========================== */
 
-function updateChunks(){
+// Skapa en chunk vid 0,0
+let chunk = new Chunk(0, 0);
 
-let cx=Math.floor(camera.position.x/CHUNK_SIZE);
-let cz=Math.floor(camera.position.z/CHUNK_SIZE);
-
-for(let dx=-RENDER_DISTANCE; dx<=RENDER_DISTANCE; dx++){
-for(let dz=-RENDER_DISTANCE; dz<=RENDER_DISTANCE; dz++){
-
-let key=`${cx+dx},${cz+dz}`;
-
-if(!chunks.has(key)){
-chunks.set(key, new Chunk(cx+dx, cz+dz));
-}
-}
-}
-
-for(let key of chunks.keys()){
-let [x,z]=key.split(",").map(Number);
-if(Math.abs(x-cx)>RENDER_DISTANCE+1 || Math.abs(z-cz)>RENDER_DISTANCE+1){
-let chunk = chunks.get(key);
-if(chunk && chunk.mesh) scene.remove(chunk.mesh);
-chunks.delete(key);
-}
-}
-}
+// Skapa grann-chunks
+new Chunk(-1, 0);
+new Chunk(1, 0);
+new Chunk(0, -1);
+new Chunk(0, 1);
 
 /* ===========================
    PLAYER UPDATE
 =========================== */
 
-function updatePlayer(delta){
-// Friktion
-velocity.x -= velocity.x * 10 * delta;
-velocity.z -= velocity.z * 10 * delta;
+function updatePlayer(delta) {
+    // Friktion
+    velocity.x -= velocity.x * 10 * delta;
+    velocity.z -= velocity.z * 10 * delta;
 
-// Rörelse
-let speed = 40;
-if(keys["KeyW"]) velocity.z -= speed * delta;
-if(keys["KeyS"]) velocity.z += speed * delta;
-if(keys["KeyA"]) velocity.x -= speed * delta;
-if(keys["KeyD"]) velocity.x += speed * delta;
+    // Rörelse
+    let speed = 50;
+    if(keys["KeyW"]) velocity.z -= speed * delta;
+    if(keys["KeyS"]) velocity.z += speed * delta;
+    if(keys["KeyA"]) velocity.x -= speed * delta;
+    if(keys["KeyD"]) velocity.x += speed * delta;
 
-camera.translateX(velocity.x * delta);
-camera.translateZ(velocity.z * delta);
+    camera.translateX(velocity.x * delta);
+    camera.translateZ(velocity.z * delta);
 
-// Gravitation
-velocity.y -= 50 * delta;
-camera.position.y += velocity.y * delta;
+    // Gravitation
+    velocity.y -= 50 * delta;
+    camera.position.y += velocity.y * delta;
 
-// Markkollision (enkel)
-if(camera.position.y < 15){
-velocity.y = 0;
-camera.position.y = 15;
-canJump = true;
-}
+    // Markkollision
+    if(camera.position.y < 20) {
+        velocity.y = 0;
+        camera.position.y = 20;
+        canJump = true;
+    }
 
-// Hopp
-if(keys["Space"] && canJump){
-velocity.y = 20;
-canJump = false;
-}
+    // Hopp
+    if(keys["Space"] && canJump) {
+        velocity.y = 25;
+        canJump = false;
+    }
+    
+    // Uppdatera debug
+    debugDiv.innerHTML = `Pos: ${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)}<br>Faces: ${chunk.mesh ? 'OK' : 'NULL'}`;
 }
 
 /* ===========================
    LOOP
 =========================== */
 
-function animate(){
-requestAnimationFrame(animate);
-let delta = Math.min(clock.getDelta(), 0.1);
-updatePlayer(delta);
-updateChunks();
-renderer.render(scene, camera);
+function animate() {
+    requestAnimationFrame(animate);
+    let delta = Math.min(clock.getDelta(), 0.1);
+    updatePlayer(delta);
+    renderer.render(scene, camera);
 }
 
 animate();
 
-// Hantera fönsterstorlek
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
