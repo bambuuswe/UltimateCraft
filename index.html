@@ -2,60 +2,74 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>REAL ENGINE CORE</title>
+<title>Voxel Engine 2.0</title>
 <style>
 body { margin:0; overflow:hidden; background:black; }
-#crosshair {
-    position:fixed;
-    top:50%; left:50%;
-    width:6px; height:6px;
-    margin-left:-3px; margin-top:-3px;
-    background:white;
-}
-#ui {
-    position:fixed;
-    top:10px; left:10px;
-    color:white;
-    font-family:monospace;
+#crosshair{
+position:fixed;
+top:50%;left:50%;
+width:6px;height:6px;
+margin-left:-3px;margin-top:-3px;
+background:white;
 }
 </style>
 </head>
 <body>
 
 <div id="crosshair"></div>
-<div id="ui">REAL ENGINE CORE</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js"></script>
 
 <script>
-/* ================================
+/* ===========================
    BASIC SETUP
-================================ */
+=========================== */
 
 let scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87CEEB);
-
 let camera = new THREE.PerspectiveCamera(
-    75,
-    window.innerWidth/window.innerHeight,
-    0.1,
-    1000
+75, window.innerWidth/window.innerHeight, 0.1, 1000
 );
-
 let renderer = new THREE.WebGLRenderer({antialias:false});
 renderer.setSize(window.innerWidth,window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
 let clock = new THREE.Clock();
 
-let light = new THREE.DirectionalLight(0xffffff,1);
-light.position.set(100,200,100);
-scene.add(light);
+scene.background = new THREE.Color(0x87CEEB);
+
+let sun = new THREE.DirectionalLight(0xffffff,1);
+sun.position.set(100,200,100);
+scene.add(sun);
 scene.add(new THREE.AmbientLight(0x404040));
 
-/* ================================
+/* ===========================
+   TEXTURE ATLAS
+=========================== */
+
+const TILE_SIZE = 16;
+const ATLAS_SIZE = 256; // 256x256 atlas
+const TILE_UV = TILE_SIZE / ATLAS_SIZE;
+
+let texture = new THREE.TextureLoader().load("atlas.png");
+texture.magFilter = THREE.NearestFilter;
+texture.minFilter = THREE.NearestFilter;
+
+let material = new THREE.MeshLambertMaterial({ map: texture });
+
+function getUV(tileX, tileY){
+let u = tileX * TILE_UV;
+let v = 1 - TILE_UV - tileY * TILE_UV;
+return [
+u, v,
+u + TILE_UV, v,
+u + TILE_UV, v + TILE_UV,
+u, v + TILE_UV
+];
+}
+
+/* ===========================
    PLAYER
-================================ */
+=========================== */
 
 let velocity = new THREE.Vector3();
 let keys = {};
@@ -65,275 +79,215 @@ camera.position.set(0,20,0);
 
 document.body.onclick = ()=> document.body.requestPointerLock();
 
-document.addEventListener("mousemove", e=>{
-    if(document.pointerLockElement===document.body){
-        camera.rotation.y -= e.movementX*0.002;
-        camera.rotation.x -= e.movementY*0.002;
-        camera.rotation.x = Math.max(-1.5,Math.min(1.5,camera.rotation.x));
-    }
+document.addEventListener("mousemove",e=>{
+if(document.pointerLockElement===document.body){
+camera.rotation.y -= e.movementX*0.002;
+camera.rotation.x -= e.movementY*0.002;
+camera.rotation.x = Math.max(-1.5,Math.min(1.5,camera.rotation.x));
+}
 });
 
-document.addEventListener("keydown", e=> keys[e.code]=true);
-document.addEventListener("keyup", e=> keys[e.code]=false);
+document.addEventListener("keydown",e=>keys[e.code]=true);
+document.addEventListener("keyup",e=>keys[e.code]=false);
 
-/* ================================
-   VOXEL ENGINE CORE
-================================ */
+/* ===========================
+   ENGINE CORE
+=========================== */
 
-const CHUNK_SIZE = 16;
-const CHUNK_HEIGHT = 32;
-const RENDER_DISTANCE = 2;
+const CHUNK_SIZE=16;
+const CHUNK_HEIGHT=32;
+const RENDER_DISTANCE=2;
 
-let chunks = new Map();
+let chunks=new Map();
 
-/* -------- CHUNK CLASS -------- */
+class Chunk{
 
-class Chunk {
+constructor(cx,cz){
+this.cx=cx;
+this.cz=cz;
+this.voxels=new Uint8Array(CHUNK_SIZE*CHUNK_HEIGHT*CHUNK_SIZE);
+this.mesh=null;
+this.generate();
+this.buildMesh();
+}
 
-    constructor(cx,cz){
-        this.cx=cx;
-        this.cz=cz;
-        this.voxels = new Uint8Array(CHUNK_SIZE*CHUNK_HEIGHT*CHUNK_SIZE);
-        this.mesh=null;
-        this.generate();
-        this.buildMesh();
-    }
+index(x,y,z){
+return x + CHUNK_SIZE*(z + CHUNK_SIZE*y);
+}
 
-    index(x,y,z){
-        return x + CHUNK_SIZE*(z + CHUNK_SIZE*y);
-    }
+get(x,y,z){
+if(x<0||y<0||z<0||x>=CHUNK_SIZE||y>=CHUNK_HEIGHT||z>=CHUNK_SIZE)
+return 0;
+return this.voxels[this.index(x,y,z)];
+}
 
-    get(x,y,z){
-        if(x<0||z<0||y<0||x>=CHUNK_SIZE||z>=CHUNK_SIZE||y>=CHUNK_HEIGHT)
-            return 0;
-        return this.voxels[this.index(x,y,z)];
-    }
+set(x,y,z,v){
+this.voxels[this.index(x,y,z)]=v;
+}
 
-    set(x,y,z,v){
-        this.voxels[this.index(x,y,z)] = v;
-    }
+generate(){
+for(let x=0;x<CHUNK_SIZE;x++){
+for(let z=0;z<CHUNK_SIZE;z++){
 
-    generate(){
-        for(let x=0;x<CHUNK_SIZE;x++){
-            for(let z=0;z<CHUNK_SIZE;z++){
+let worldX=this.cx*CHUNK_SIZE+x;
+let worldZ=this.cz*CHUNK_SIZE+z;
 
-                let worldX = this.cx*CHUNK_SIZE + x;
-                let worldZ = this.cz*CHUNK_SIZE + z;
+let height=Math.floor(
+8 + Math.sin(worldX*0.1)*3 +
+Math.cos(worldZ*0.1)*3
+);
 
-                let height = Math.floor(
-                    8 + Math.sin(worldX*0.1)*3 +
-                    Math.cos(worldZ*0.1)*3
-                );
+for(let y=0;y<height;y++){
+if(y===height-1) this.set(x,y,z,1);
+else this.set(x,y,z,2);
+}
+}
+}
+}
 
-                for(let y=0;y<height;y++){
-                    if(y===height-1)
-                        this.set(x,y,z,1); // grass
-                    else
-                        this.set(x,y,z,2); // dirt
-                }
-            }
-        }
-    }
+buildMesh(){
 
-    buildMesh(){
+if(this.mesh) scene.remove(this.mesh);
 
-        if(this.mesh) scene.remove(this.mesh);
+let positions=[];
+let uvs=[];
+let indices=[];
+let face=0;
 
-        let positions=[];
-        let indices=[];
-        let face=0;
+const faces=[
+{dir:[0,1,0],  corners:[[0,1,0],[1,1,0],[1,1,1],[0,1,1]]},
+{dir:[0,-1,0], corners:[[0,0,1],[1,0,1],[1,0,0],[0,0,0]]},
+{dir:[1,0,0],  corners:[[1,0,1],[1,1,1],[1,1,0],[1,0,0]]},
+{dir:[-1,0,0], corners:[[0,0,0],[0,1,0],[0,1,1],[0,0,1]]},
+{dir:[0,0,1],  corners:[[0,0,1],[0,1,1],[1,1,1],[1,0,1]]},
+{dir:[0,0,-1], corners:[[1,0,0],[1,1,0],[0,1,0],[0,0,0]]},
+];
 
-        const faces = [
-            {dir:[0,1,0],  corners:[[0,1,0],[1,1,0],[1,1,1],[0,1,1]]}, // top
-            {dir:[0,-1,0], corners:[[0,0,1],[1,0,1],[1,0,0],[0,0,0]]}, // bottom
-            {dir:[1,0,0],  corners:[[1,0,1],[1,1,1],[1,1,0],[1,0,0]]}, // east
-            {dir:[-1,0,0], corners:[[0,0,0],[0,1,0],[0,1,1],[0,0,1]]}, // west
-            {dir:[0,0,1],  corners:[[0,0,1],[0,1,1],[1,1,1],[1,0,1]]}, // south
-            {dir:[0,0,-1], corners:[[1,0,0],[1,1,0],[0,1,0],[0,0,0]]}, // north
-        ];
+for(let x=0;x<CHUNK_SIZE;x++){
+for(let y=0;y<CHUNK_HEIGHT;y++){
+for(let z=0;z<CHUNK_SIZE;z++){
 
-        for(let x=0;x<CHUNK_SIZE;x++){
-            for(let y=0;y<CHUNK_HEIGHT;y++){
-                for(let z=0;z<CHUNK_SIZE;z++){
+let block=this.get(x,y,z);
+if(!block) continue;
 
-                    let block=this.get(x,y,z);
-                    if(!block) continue;
+for(let f of faces){
 
-                    for(let f of faces){
+let nx=x+f.dir[0];
+let ny=y+f.dir[1];
+let nz=z+f.dir[2];
 
-                        let nx=x+f.dir[0];
-                        let ny=y+f.dir[1];
-                        let nz=z+f.dir[2];
+if(this.get(nx,ny,nz)) continue;
 
-                        if(this.get(nx,ny,nz)) continue;
+let wx=this.cx*CHUNK_SIZE+x;
+let wz=this.cz*CHUNK_SIZE+z;
 
-                        let wx=this.cx*CHUNK_SIZE + x;
-                        let wz=this.cz*CHUNK_SIZE + z;
+for(let c of f.corners){
+positions.push(wx+c[0],y+c[1],wz+c[2]);
+}
 
-                        for(let c of f.corners){
-                            positions.push(
-                                wx+c[0],
-                                y+c[1],
-                                wz+c[2]
-                            );
-                        }
+let tileX = block===1 ? 0 : 1;
+let tileY = 0;
 
-                        indices.push(
-                            face*4+0,
-                            face*4+1,
-                            face*4+2,
-                            face*4+0,
-                            face*4+2,
-                            face*4+3
-                        );
+let uv=getUV(tileX,tileY);
+uvs.push(...uv);
 
-                        face++;
-                    }
-                }
-            }
-        }
+indices.push(
+face*4+0,face*4+1,face*4+2,
+face*4+0,face*4+2,face*4+3
+);
 
-        let geo=new THREE.BufferGeometry();
-        geo.setAttribute(
-            "position",
-            new THREE.Float32BufferAttribute(positions,3)
-        );
-        geo.setIndex(indices);
-        geo.computeVertexNormals();
+face++;
+}
+}
+}
+}
 
-        let mat=new THREE.MeshLambertMaterial({color:0x55aa55});
-        this.mesh=new THREE.Mesh(geo,mat);
-        scene.add(this.mesh);
-    }
+let geo=new THREE.BufferGeometry();
+geo.setAttribute("position",
+new THREE.Float32BufferAttribute(positions,3));
+geo.setAttribute("uv",
+new THREE.Float32BufferAttribute(uvs,2));
+geo.setIndex(indices);
+geo.computeVertexNormals();
+
+this.mesh=new THREE.Mesh(geo,material);
+scene.add(this.mesh);
+}
 
 }
 
-/* ================================
-   CHUNK MANAGER
-================================ */
+/* ===========================
+   CHUNK STREAMING
+=========================== */
 
 function updateChunks(){
 
-    let cx=Math.floor(camera.position.x/CHUNK_SIZE);
-    let cz=Math.floor(camera.position.z/CHUNK_SIZE);
+let cx=Math.floor(camera.position.x/CHUNK_SIZE);
+let cz=Math.floor(camera.position.z/CHUNK_SIZE);
 
-    for(let dx=-RENDER_DISTANCE;dx<=RENDER_DISTANCE;dx++){
-        for(let dz=-RENDER_DISTANCE;dz<=RENDER_DISTANCE;dz++){
+for(let dx=-RENDER_DISTANCE;dx<=RENDER_DISTANCE;dx++){
+for(let dz=-RENDER_DISTANCE;dz<=RENDER_DISTANCE;dz++){
 
-            let key=`${cx+dx},${cz+dz}`;
+let key=`${cx+dx},${cz+dz}`;
 
-            if(!chunks.has(key)){
-                chunks.set(key,new Chunk(cx+dx,cz+dz));
-            }
-        }
-    }
+if(!chunks.has(key)){
+chunks.set(key,new Chunk(cx+dx,cz+dz));
+}
+}
 }
 
-/* ================================
-   RAYCAST MINING
-================================ */
-
-function raycast(){
-
-    let ray=new THREE.Raycaster();
-    ray.setFromCamera(new THREE.Vector2(0,0),camera);
-
-    let meshes=[...chunks.values()].map(c=>c.mesh);
-    return ray.intersectObjects(meshes);
+for(let key of chunks.keys()){
+let [x,z]=key.split(",").map(Number);
+if(Math.abs(x-cx)>RENDER_DISTANCE+1||
+Math.abs(z-cz)>RENDER_DISTANCE+1){
+scene.remove(chunks.get(key).mesh);
+chunks.delete(key);
+}
+}
 }
 
-document.addEventListener("mousedown",e=>{
-
-    let hit=raycast();
-    if(hit.length===0) return;
-
-    let p=hit[0].point.clone().add(hit[0].face.normal.multiplyScalar(-0.01));
-
-    let x=Math.floor(p.x);
-    let y=Math.floor(p.y);
-    let z=Math.floor(p.z);
-
-    let cx=Math.floor(x/CHUNK_SIZE);
-    let cz=Math.floor(z/CHUNK_SIZE);
-
-    let chunk=chunks.get(`${cx},${cz}`);
-    if(!chunk) return;
-
-    let lx=x - cx*CHUNK_SIZE;
-    let lz=z - cz*CHUNK_SIZE;
-
-    if(e.button===0){ // remove
-        chunk.set(lx,y,lz,0);
-        chunk.buildMesh();
-    }
-
-    if(e.button===2){ // place
-        let place=hit[0].point.clone().add(hit[0].face.normal);
-        let px=Math.floor(place.x);
-        let py=Math.floor(place.y);
-        let pz=Math.floor(place.z);
-
-        let pcx=Math.floor(px/CHUNK_SIZE);
-        let pcz=Math.floor(pz/CHUNK_SIZE);
-
-        let pchunk=chunks.get(`${pcx},${pcz}`);
-        if(!pchunk) return;
-
-        let plx=px - pcx*CHUNK_SIZE;
-        let plz=pz - pcz*CHUNK_SIZE;
-
-        pchunk.set(plx,py,plz,1);
-        pchunk.buildMesh();
-    }
-
-});
-
-/* ================================
+/* ===========================
    PLAYER UPDATE
-================================ */
+=========================== */
 
 function updatePlayer(delta){
 
-    velocity.x -= velocity.x*10*delta;
-    velocity.z -= velocity.z*10*delta;
+velocity.x-=velocity.x*10*delta;
+velocity.z-=velocity.z*10*delta;
 
-    if(keys["KeyW"]) velocity.z -= 30*delta;
-    if(keys["KeyS"]) velocity.z += 30*delta;
-    if(keys["KeyA"]) velocity.x -= 30*delta;
-    if(keys["KeyD"]) velocity.x += 30*delta;
+if(keys["KeyW"]) velocity.z-=30*delta;
+if(keys["KeyS"]) velocity.z+=30*delta;
+if(keys["KeyA"]) velocity.x-=30*delta;
+if(keys["KeyD"]) velocity.x+=30*delta;
 
-    camera.translateX(velocity.x*delta);
-    camera.translateZ(velocity.z*delta);
+camera.translateX(velocity.x*delta);
+camera.translateZ(velocity.z*delta);
 
-    velocity.y -= 40*delta;
-    camera.position.y += velocity.y*delta;
+velocity.y-=40*delta;
+camera.position.y+=velocity.y*delta;
 
-    if(camera.position.y<10){
-        velocity.y=0;
-        camera.position.y=10;
-        canJump=true;
-    }
-
-    if(keys["Space"] && canJump){
-        velocity.y=15;
-        canJump=false;
-    }
+if(camera.position.y<10){
+velocity.y=0;
+camera.position.y=10;
+canJump=true;
 }
 
-/* ================================
+if(keys["Space"]&&canJump){
+velocity.y=15;
+canJump=false;
+}
+}
+
+/* ===========================
    LOOP
-================================ */
+=========================== */
 
 function animate(){
-
-    requestAnimationFrame(animate);
-
-    let delta=clock.getDelta();
-
-    updatePlayer(delta);
-    updateChunks();
-
-    renderer.render(scene,camera);
+requestAnimationFrame(animate);
+let delta=clock.getDelta();
+updatePlayer(delta);
+updateChunks();
+renderer.render(scene,camera);
 }
 
 animate();
