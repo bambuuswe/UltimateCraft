@@ -11,6 +11,7 @@ top:50%;left:50%;
 width:6px;height:6px;
 margin-left:-3px;margin-top:-3px;
 background:white;
+pointer-events:none;
 }
 </style>
 </head>
@@ -47,24 +48,48 @@ scene.add(new THREE.AmbientLight(0x404040));
 =========================== */
 
 const TILE_SIZE = 16;
-const ATLAS_SIZE = 256; // 256x256 atlas
+const ATLAS_SIZE = 256;
 const TILE_UV = TILE_SIZE / ATLAS_SIZE;
 
-let texture = new THREE.TextureLoader().load("atlas.png");
+// Skapa en fallback-texture om atlas.png inte finns
+let canvas = document.createElement('canvas');
+canvas.width = 256;
+canvas.height = 256;
+let ctx = canvas.getContext('2d');
+ctx.fillStyle = '#654321';
+ctx.fillRect(0,0,256,256);
+ctx.fillStyle = '#228B22';
+ctx.fillRect(16,0,16,16);
+ctx.fillStyle = '#8B4513';
+ctx.fillRect(0,0,16,16);
+
+let texture = new THREE.CanvasTexture(canvas);
 texture.magFilter = THREE.NearestFilter;
 texture.minFilter = THREE.NearestFilter;
+
+// Försök ladda atlas.png om den finns
+new THREE.TextureLoader().load("atlas.png", 
+    function(tex) {
+        texture.image = tex.image;
+        texture.needsUpdate = true;
+    },
+    undefined,
+    function(err) {
+        console.log("Använder fallback-texture");
+    }
+);
 
 let material = new THREE.MeshLambertMaterial({ map: texture });
 
 function getUV(tileX, tileY){
-let u = tileX * TILE_UV;
-let v = 1 - TILE_UV - tileY * TILE_UV;
-return [
-u, v,
-u + TILE_UV, v,
-u + TILE_UV, v + TILE_UV,
-u, v + TILE_UV
-];
+    let u = tileX * TILE_UV;
+    let v = 1 - (tileY + 1) * TILE_UV;
+    return [
+        u, v + TILE_UV,  // 0,0
+        u + TILE_UV, v + TILE_UV,  // 1,0
+        u + TILE_UV, v,  // 1,1
+        u, v   // 0,1
+    ];
 }
 
 /* ===========================
@@ -75,7 +100,7 @@ let velocity = new THREE.Vector3();
 let keys = {};
 let canJump = false;
 
-camera.position.set(0,20,0);
+camera.position.set(0,40,0);
 
 document.body.onclick = ()=> document.body.requestPointerLock();
 
@@ -147,7 +172,10 @@ else this.set(x,y,z,2);
 
 buildMesh(){
 
-if(this.mesh) scene.remove(this.mesh);
+if(this.mesh) {
+    scene.remove(this.mesh);
+    this.mesh.geometry.dispose();
+}
 
 let positions=[];
 let uvs=[];
@@ -155,12 +183,12 @@ let indices=[];
 let face=0;
 
 const faces=[
-{dir:[0,1,0],  corners:[[0,1,0],[1,1,0],[1,1,1],[0,1,1]]},
-{dir:[0,-1,0], corners:[[0,0,1],[1,0,1],[1,0,0],[0,0,0]]},
-{dir:[1,0,0],  corners:[[1,0,1],[1,1,1],[1,1,0],[1,0,0]]},
-{dir:[-1,0,0], corners:[[0,0,0],[0,1,0],[0,1,1],[0,0,1]]},
-{dir:[0,0,1],  corners:[[0,0,1],[0,1,1],[1,1,1],[1,0,1]]},
-{dir:[0,0,-1], corners:[[1,0,0],[1,1,0],[0,1,0],[0,0,0]]},
+{dir:[0,1,0],  corners:[[0,1,0],[1,1,0],[1,1,1],[0,1,1]], uvOrder:[0,1,2,3]},
+{dir:[0,-1,0], corners:[[0,0,1],[1,0,1],[1,0,0],[0,0,0]], uvOrder:[0,1,2,3]},
+{dir:[1,0,0],  corners:[[1,0,1],[1,1,1],[1,1,0],[1,0,0]], uvOrder:[0,1,2,3]},
+{dir:[-1,0,0], corners:[[0,0,0],[0,1,0],[0,1,1],[0,0,1]], uvOrder:[0,1,2,3]},
+{dir:[0,0,1],  corners:[[0,0,1],[0,1,1],[1,1,1],[1,0,1]], uvOrder:[0,1,2,3]},
+{dir:[0,0,-1], corners:[[1,0,0],[1,1,0],[0,1,0],[0,0,0]], uvOrder:[0,1,2,3]},
 ];
 
 for(let x=0;x<CHUNK_SIZE;x++){
@@ -189,7 +217,12 @@ let tileX = block===1 ? 0 : 1;
 let tileY = 0;
 
 let uv=getUV(tileX,tileY);
-uvs.push(...uv);
+
+// Korrekt UV-mappning för varje hörn
+uvs.push(uv[0], uv[1]);  // hörn 0
+uvs.push(uv[2], uv[3]);  // hörn 1
+uvs.push(uv[4], uv[5]);  // hörn 2
+uvs.push(uv[6], uv[7]);  // hörn 3
 
 indices.push(
 face*4+0,face*4+1,face*4+2,
@@ -201,6 +234,8 @@ face++;
 }
 }
 }
+
+if(positions.length === 0) return;
 
 let geo=new THREE.BufferGeometry();
 geo.setAttribute("position",
@@ -240,7 +275,8 @@ for(let key of chunks.keys()){
 let [x,z]=key.split(",").map(Number);
 if(Math.abs(x-cx)>RENDER_DISTANCE+1||
 Math.abs(z-cz)>RENDER_DISTANCE+1){
-scene.remove(chunks.get(key).mesh);
+let chunk = chunks.get(key);
+if(chunk.mesh) scene.remove(chunk.mesh);
 chunks.delete(key);
 }
 }
@@ -255,20 +291,24 @@ function updatePlayer(delta){
 velocity.x-=velocity.x*10*delta;
 velocity.z-=velocity.z*10*delta;
 
-if(keys["KeyW"]) velocity.z-=30*delta;
-if(keys["KeyS"]) velocity.z+=30*delta;
-if(keys["KeyA"]) velocity.x-=30*delta;
-if(keys["KeyD"]) velocity.x+=30*delta;
+// Rörelse relativt kamerans riktning
+let speed = 30;
+if(keys["KeyW"]) velocity.z-=speed*delta;
+if(keys["KeyS"]) velocity.z+=speed*delta;
+if(keys["KeyA"]) velocity.x-=speed*delta;
+if(keys["KeyD"]) velocity.x+=speed*delta;
 
 camera.translateX(velocity.x*delta);
 camera.translateZ(velocity.z*delta);
 
+// Enkel gravitation
 velocity.y-=40*delta;
 camera.position.y+=velocity.y*delta;
 
-if(camera.position.y<10){
+// Markkollision (enkel)
+if(camera.position.y<12){
 velocity.y=0;
-camera.position.y=10;
+camera.position.y=12;
 canJump=true;
 }
 
@@ -284,7 +324,7 @@ canJump=false;
 
 function animate(){
 requestAnimationFrame(animate);
-let delta=clock.getDelta();
+let delta=Math.min(clock.getDelta(), 0.1); // Cap delta för att undvika hopp
 updatePlayer(delta);
 updateChunks();
 renderer.render(scene,camera);
